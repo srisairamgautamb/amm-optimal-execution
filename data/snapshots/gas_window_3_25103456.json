@@ -1,0 +1,23 @@
+[
+  {
+    "base_fee_gwei": 0.121052118,
+    "base_fee_per_gas_wei": 121052118,
+    "block_number": 25103456,
+    "gas_price_gwei": 0.121052218,
+    "gas_price_wei": 121052218
+  },
+  {
+    "base_fee_gwei": 0.123758042,
+    "base_fee_per_gas_wei": 123758042,
+    "block_number": 25103455,
+    "gas_price_gwei": 0.121052218,
+    "gas_price_wei": 121052218
+  },
+  {
+    "base_fee_gwei": 0.125392294,
+    "base_fee_per_gas_wei": 125392294,
+    "block_number": 25103454,
+    "gas_price_gwei": 0.121052218,
+    "gas_price_wei": 121052218
+  }
+]
