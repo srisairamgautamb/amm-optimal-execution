@@ -9,7 +9,8 @@ import torch.nn as nn
 import torch.distributions as dists
 
 
-HIDDEN: int = 64
+HIDDEN: int = 256
+N_TRUNK_LAYERS: int = 3
 LOG_STD_INIT: float = 0.0
 EPS: float = 1e-6
 
@@ -28,12 +29,10 @@ class ActorCritic(nn.Module):
         self.obs_dim = int(obs_dim)
         self.act_dim = int(act_dim)
         self.with_cvar_head = bool(with_cvar_head)
-        self.trunk = nn.Sequential(
-            nn.Linear(obs_dim, HIDDEN),
-            nn.Tanh(),
-            nn.Linear(HIDDEN, HIDDEN),
-            nn.Tanh(),
-        )
+        layers = [nn.Linear(obs_dim, HIDDEN), nn.Tanh()]
+        for _ in range(N_TRUNK_LAYERS - 1):
+            layers += [nn.Linear(HIDDEN, HIDDEN), nn.Tanh()]
+        self.trunk = nn.Sequential(*layers)
         self.actor_mean = nn.Linear(HIDDEN, act_dim)
         self.actor_log_std = nn.Parameter(torch.full((act_dim,), LOG_STD_INIT))
         self.critic = nn.Linear(HIDDEN, 1)

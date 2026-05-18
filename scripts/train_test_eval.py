@@ -187,15 +187,23 @@ def _args() -> argparse.Namespace:
     p.add_argument("--T", type=int, default=20)
     p.add_argument("--eval-episodes", type=int, default=64)
     p.add_argument("--out-dir", default="artifacts/phase3d")
+    p.add_argument("--sigma-b", type=float, default=1.5,
+                   help="AR(1) base-fee log-shock std override.")
+    p.add_argument("--obs-dim", type=int, default=7,
+                   help="Total observation dim. gas_history_len = obs_dim - 4.")
     return p.parse_args()
 
 
 def main() -> None:
     a = _args()
+    if a.obs_dim < 4:
+        raise ValueError(f"--obs-dim must be >= 4, got {a.obs_dim}")
     cfg = Phase3DConfig(
         Q0=a.Q0, T=a.T, total_timesteps=a.total_timesteps,
         seeds=tuple(a.seeds), cvar_lambdas=tuple(a.lambdas),
         eval_episodes=a.eval_episodes, out_dir=a.out_dir,
+        sigma_b_override=a.sigma_b,
+        gas_history_len=a.obs_dim - 4,
     )
     run_all(cfg)
 
