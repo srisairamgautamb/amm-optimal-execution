@@ -1,204 +1,230 @@
-# defi_execution_project
+# Empirical Limits of Risk-Averse Reinforcement Learning versus Closed-Form Routing in Deterministic DeFi Execution
 
-A research codebase for optimal liquidation of an inventory on a Uniswap V2
-style constant-product pool, in the presence of a rational MEV sandwich
-adversary. The agent is PPO with an optional Rockafellar-Uryasev CVaR
-penalty. Gas is sampled from an AR(1)-lognormal model calibrated to live
-EIP-1559 fee history, and the background pool flow replays real Swap
-events fetched from mainnet.
+Risk-averse reinforcement learning for optimal liquidation on a Uniswap V2
+constant-product pool under a rational MEV sandwich adversary, benchmarked
+against a closed-form convex oracle.
 
-The scope is deliberately the temporal problem: how to split a large order
-across blocks. Spatial routing across multiple pools is a separate convex
-program solved well by Angeris and Chitra (2022), and is out of scope here.
+The agent is PPO with an optional Rockafellar–Uryasev CVaR penalty and a
+Chow–Ghavamzadeh dual-head critic. Gas is sampled from an AR(1)-lognormal
+process calibrated to live EIP-1559 fee history, and background pool flow
+replays real Swap events fetched from mainnet at a pinned block. Scope is
+the temporal trade-splitting problem; spatial multi-pool routing is the
+convex programme of Angeris and Chitra (2022) and is intentionally out of
+scope.
 
-This repository serves as a rigorous empirical benchmark, demonstrating both
-the capabilities and the structural limits of model-free reinforcement
-learning against closed-form convex oracles in deterministic DeFi
-environments.
+The repository is a deterministic, reproducible empirical bound on what a
+model-free MLP policy attains against an omniscient analytical oracle in
+mechanically closed-form DeFi mechanics. The headline number is **79%**
+of the oracle, and the experimental design captures a documented instance
+of specification gaming that inflated apparent returns threefold before it
+was patched.
 
+---
 
 ## Quickstart
 
-Tested on Python 3.10 to 3.14 on macOS and Linux.
+Tested on Python 3.10–3.14 on macOS and Linux.
 
-```
-git clone <repo-url>
+```bash
+git clone <repo-url> defi_execution_project
 cd defi_execution_project
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python3 -m pytest tests/             # 93 tests, all offline
-python3 -m scripts.run_full_live     # full pipeline on live mainnet RPC
+python3 -m pytest tests/                 # 93 tests, fully offline
+python3 -m scripts.run_full_live         # end-to-end live mainnet RPC
 ```
 
-The demo notebook in `notebooks/demo.ipynb` is already executed, with all
-figures embedded. `notebooks/demo.html` is a self-contained browser export
-that opens in any browser without a kernel.
+The executed demo notebook is at `notebooks/demo.ipynb` (with figures
+embedded); `notebooks/demo.html` is a self-contained kernel-free export.
 
+---
 
-## How the codebase is organised
+## Repository layout
 
-```
-env/        AMM environment, MEV sandwich bot, gas sampler, flow replayer
-data/       JSON-RPC client, pool reserves, fee history, Swap-event logs, snapshots
-agent/      baseline policies and the PPO + CVaR-PPO stack
-scripts/    calibration, training sweeps, evaluation, figure rendering
-tests/      93 tests, no network required
-notebooks/  demo.ipynb (executed) and demo.html
-artifacts/  Pareto figures from the sweeps and the publication figures
-```
+| Path | Purpose |
+|------|---------|
+| `env/` | AMM environment, MEV sandwich adversary, AR(1) gas sampler, flow replayer |
+| `data/` | JSON-RPC client, pool reserves, fee history, Swap event logs, frozen snapshots |
+| `agent/` | Baselines (single dump, TWAP, gas-aware greedy, convex no-MEV) and PPO + CVaR stack |
+| `scripts/` | Calibration, training sweeps, evaluation, figure rendering, live end-to-end |
+| `tests/` | 93 deterministic offline tests |
+| `notebooks/` | Executed demo notebook and HTML export |
+| `artifacts/` | Pareto figures from the sweeps and the publication figures |
+| `paper/` | IEEE conference-style write-up (LaTeX + compiled PDF) |
 
-Everything in `data/snapshots/` is a frozen offline capture of mainnet
-state from blocks 25,103,456 and 25,096,742-25,106,741. The tests run
-entirely against these snapshots so the suite stays deterministic and
-offline.
+All files in `data/snapshots/` are frozen mainnet captures (blocks
+25,103,456 and 25,096,742–25,106,741). The test suite runs entirely
+against these snapshots and never touches the network.
 
+---
 
-## The math, briefly
+## Mathematical model
 
-For a CFMM with fee retention gamma, selling q of token X into a pool with
-reserves (x, y) yields
+**Constant-product execution.** Selling $q$ units of token $X$ into a pool
+with reserves $(x, y)$ and fee retention $\gamma$ yields
 
-    delta_y = y * gamma * q / (x + gamma * q)
+$$\Delta y \;=\; \frac{y \gamma q}{x + \gamma q}.$$
 
-The MEV sandwich bot acts iff its optimal arbitrage profit clears the gas
-cost: `p_t * max_delta Pi_MEV(q_t, delta) > c_t`, with `p_t = y_t / x_t`
-the pre-attack mid. The optimisation runs `scipy.optimize.minimize_scalar`
-on a wide bracket and asserts the optimum is strictly interior post-solve
-(if it ever binds, the model is silently understating the adversary).
+The invariant $k = xy$ is monotone non-decreasing and strict whenever
+$\gamma < 1$ and $q > 0$.
 
-The agent's MDP has state `(Q_t, tau_t, x_t, c_t)`, optionally extended
-with a 3-block gas history. Action `u_t in [0, 1]` produces `q_t = u_t * Q_t`.
-Reward is the realised `delta_y` after the bot has done whatever it does.
+**MEV adversary.** A rational arbitrageur sandwiches the trader's pending
+swap iff the optimised payoff clears the gas cost:
 
-A residual `Q_T` at the terminal block is force-liquidated in a single
-trade that DOES go through the MEV adversary. (The earlier spec routed
-this through plain CFMM. The agent immediately discovered the loophole.
-See below.)
+$$p_t \cdot \max_{\delta_{\text{in}}} \Pi_{\text{MEV}}(q_t, \delta_{\text{in}}) \;>\; c_t,$$
 
+with $p_t = y_t / x_t$ the pre-attack mid. The one-dimensional maximisation
+is solved with Brent's method on a bracket $\bigl(10^{-9},\,
+\max(10^3 q_t,\, 10 x_t)\bigr)$; a bind-assertion guarantees the optimum is
+interior, never wall-pinned.
 
-## The headline finding: PPO will exploit any hole you leave
+**Gas process.** Joint AR(1) fitted on the most recent 200 EIP-1559
+fee-history records:
 
-The first 1M-step sweep on the original specification reported a mean
-reward around 168,000 USDC across every CVaR penalty value, with cross-seed
-standard deviation under 50 USDC for the most risk-averse policies. The
-numbers were too clean.
+$$\log b_{t+1} = \mu_b + \phi_b (\log b_t - \mu_b) + \sigma_b \varepsilon_t^b,$$
 
-A trace of what the trained policies actually did:
+$$\log p_t^{\text{prio}} = \alpha + \beta \log b_t + \sigma_p \varepsilon_t^p.$$
 
-| lambda | per-block action u | terminal q | terminal share of reward |
+**MDP.** State $s_t = (Q_t, \tau_t, x_t, c_t) \in \mathbb{R}^4$
+(optionally extended with a three-block gas history). Action
+$u_t \in [0, 1]$, quantity $q_t = u_t Q_t$. Reward
+$R_t = \Delta y_t^{\text{actual}}$ post-sandwich. Objective:
+
+$$J(\pi) = \mathbb{E}\!\left[\textstyle\sum_t R_t\right]
+  - \lambda \cdot \mathrm{CVaR}_\alpha\!\left(-\textstyle\sum_t R_t\right),$$
+
+via the Rockafellar–Uryasev dual representation.
+
+A residual $Q_T$ at the terminal block is force-liquidated **through the
+MEV adversary**, not around it. The earlier version did the opposite; that
+loophole is documented below.
+
+---
+
+## Specification gaming
+
+A 1M-step sweep on the buggy environment reported a mean reward near
+168,000 USDC across every CVaR penalty value with cross-seed standard
+deviation under 50 USDC for the most risk-averse policies. A trace of
+what the trained policies did:
+
+| $\lambda$ | per-block action $u$ | terminal $q$ | terminal share of reward |
 |---|---|---|---|
 | 0.0 | 0.0139, constant | 121,464 | 72% |
 | 1.0 | 0.0107, constant | 130,964 | 78% |
 | 3.0 | 0.0053, constant | 148,635 | 88% |
 
 The policy did not learn MEV avoidance. It learned to defer most of its
-inventory to the terminal block, where the original spec routed reward
-through a plain CFMM trade with no MEV adversary. The higher the CVaR
-penalty, the more aggressive the deferral, because per-block trades
-carried stochastic MEV exposure (variance) while the terminal dump was
-deterministic (no variance). The risk objective rewarded the loophole
-perfectly.
+inventory to the terminal block, where the earlier specification routed
+reward through plain CFMM with no adversary check. Higher CVaR penalty
+$\Rightarrow$ more aggressive deferral: per-block trades carried
+stochastic MEV exposure (variance), the terminal dump did not
+(deterministic). The risk objective rewarded the loophole perfectly.
 
-This is specification gaming. The agent solved the optimisation problem
-written down in the code. The optimisation problem was wrong.
+The patch was a one-line correction in `env/amm.py`: terminal forced
+liquidation now flows through the same `mev_adversary` hook as any
+in-horizon block. Re-evaluating the same 1M-step checkpoints on the
+corrected environment dropped headline rewards from ~168k to between
+19k and 52k USDC, with the most-deferral runs taking the largest hit.
 
-The fix was small: terminal forced liquidation now flows through the same
-MEV adversary as any normal block. Re-evaluating the same 1M-step
-checkpoints on the corrected environment dropped headline rewards from
-~168k to between 19k and 52k, exactly as predicted, with the policies
-that had deferred most aggressively taking the largest hit.
+This finding is preserved in the repository rather than quietly removed.
+It is the most useful engineering lesson the project produced.
 
-I have kept this finding visible in the repo rather than quietly fixing
-it. It is the most useful engineering lesson from the project.
+---
 
+## Headline results (corrected environment)
 
-## What the corrected sweeps say
+Pool $1\text{e}6 \times 1\text{e}6$, $\gamma = 0.997$, $Q_0 = 10\%$ of
+pool depth, $T = 20$. Five seeds per $\lambda$, evaluated on a disjoint
+10,000-block TEST window over 64 episodes.
 
-Two 1M-step sweeps were run on the fixed environment. Pool is 1e6 x 1e6
-with gamma = 0.997. `Q0 = 1e5` (10% of pool depth), `T = 20`. Each sweep
-runs five seeds across five lambda values, evaluated on a disjoint 10,000
-block TEST window over 64 episodes.
-
-Baselines on the same regime:
+### Analytical baselines
 
 | Policy | TEST mean USDC | std |
-|---|---|---|
-| single_dump | 82 | 0 |
-| twap | 37,847 | 2,466 |
-| gas_aware_greedy | 58,786 | 616 |
-| convex_no_mev | 37,847 | 2,466 |
+|---|---:|---:|
+| `single_dump` | 82 | 0 |
+| `twap` | 37,847 | 2,466 |
+| `convex_no_mev` | 37,847 | 2,466 |
+| **`gas_aware_greedy` (oracle)** | **58,786** | **616** |
 
-Sweep A, sigma_b = 0.5, observation = `(Q, tau, x, c)`:
+### PPO sweeps, 1M training steps
 
-| lambda | TEST mean USDC | std across 5 seeds |
-|---|---|---|
-| 0.0 | 45,863 | 1,357 |
+**Sweep A** — base config, $\sigma_b = 0.5$, observation $\mathbb{R}^4$:
+
+| $\lambda$ | TEST mean USDC | cross-seed std |
+|---|---:|---:|
+| 0.0 | **45,863** | 1,357 |
 | 0.1 | 31,952 | 764 |
 | 0.3 | 32,742 | 1,075 |
 | 1.0 | 34,646 | 1,443 |
 | 3.0 | 27,342 | 6,708 |
 
-Sweep B, sigma_b = 1.5, observation extended with a 3-block gas history:
+**Sweep B** — $\sigma_b = 1.5$, observation extended with 3-block gas
+history ($\mathbb{R}^7$):
 
-| lambda | TEST mean USDC | std across 5 seeds |
-|---|---|---|
-| 0.0 | 46,542 | 673 |
+| $\lambda$ | TEST mean USDC | cross-seed std |
+|---|---:|---:|
+| 0.0 | **46,542** | 673 |
 | 0.1 | 31,356 | 619 |
 | 0.3 | 30,921 | 1,706 |
 | 1.0 | 30,954 | 4,166 |
 | 3.0 | 24,732 | 5,303 |
 
-PPO does not beat the myopic `gas_aware_greedy` baseline at this trade
-size. It is worth being precise about what this baseline is: an omniscient
-oracle that evaluates the closed-form algebraic limits of the CFMM and the
-sandwich adversary at every block, with full knowledge of the trigger
-boundary. The model-free PPO agent, starting from zero domain knowledge
-and observing only the standard MDP state, learns to capture roughly 79%
-of that absolute mathematical maximum (46,542 / 58,786). Tripling the
-AR(1) gas volatility and adding a gas history did not close the remaining
-gap. This empirical limit, not a "best mean", is the primary publication
-finding.
+### What this means
 
-A few honest hypotheses for why:
+The strongest PPO cell (Sweep B, $\lambda = 0$) attains
+$46{,}542 / 58{,}786 = 79.2\%$ of the analytical oracle.
 
-1. AR(1) gas variation in absolute USDC, at this Q0, may be small relative
-   to the MEV profit Pi_MEV. The trigger boundary moves less than I
-   assumed.
-2. The MLP trunk (two layers, 96 hidden) may be too shallow to discover a
-   short temporal pattern.
-3. The policy may collapse to a near-deterministic per-block action early
-   in training and then ignore the observation. PPO's importance ratio
-   clip prevents recovery once the action distribution is too narrow.
-4. The reward landscape on fixed-rate strategies may be roughly convex at
-   this regime, with `gas_aware_greedy` sitting at the global algebraic
-   optimum that a stochastic gradient method cannot perturb without
-   recurrent memory.
+The oracle is not a stochastic baseline. It is an omniscient closed-form
+bisection at every block for the largest $q$ such that the MEV trigger
+remains false, given full knowledge of the current gas cost. The
+model-free PPO agent, starting from zero domain knowledge and observing
+only the MDP state, recovers $\sim 79\%$ of that absolute mathematical
+maximum. Tripling AR(1) gas volatility and adding gas history did not
+close the remaining gap. This empirical bound — not a "best mean" — is
+the primary publication finding.
 
-Distinguishing these requires a recurrent (LSTM) policy or a deeper trunk.
+Four hypotheses for the residual gap:
+
+1. AR(1) gas variation in absolute USDC at this $Q_0$ is small relative
+   to $\Pi_{\text{MEV}}$. The trigger boundary moves less than assumed.
+2. The MLP trunk (two layers, 64 hidden) may be too shallow to discover
+   short temporal patterns.
+3. The policy collapses to a near-deterministic per-block action early in
+   training and then ignores the observation. PPO's importance-ratio clip
+   prevents recovery once the action distribution is narrow.
+4. The reward landscape on fixed-rate strategies is roughly convex in this
+   regime; `gas_aware_greedy` sits at the global algebraic optimum that a
+   stochastic gradient method cannot perturb without recurrent memory.
+
+A recurrent (LSTM/GRU) policy or deeper trunk is the natural follow-up.
 Neither is implemented here.
 
+---
 
 ## Publication figures
 
-- `artifacts/publication_fig1_specgaming.png` shows the bug-fix delta:
-  same 1M-step checkpoints, evaluated on the buggy environment and on the
-  fixed one, against the `gas_aware_greedy` reference. This is the
-  specification-gaming figure.
-- `artifacts/publication_fig2_pareto.png` is the headline Pareto on the
-  corrected environment. Both sweeps and the four baselines are plotted.
-- `artifacts/publication_fig3_lambda_response.png` is a side-by-side bar
-  chart of Sweep A versus Sweep B, with `twap` and `gas_aware_greedy` as
-  reference lines. It is the negative-result figure.
+| File | Content |
+|------|---------|
+| `artifacts/publication_fig1_specgaming.png` | Specification-gaming collapse: same 1M-step checkpoints on buggy vs. fixed environment, against the `gas_aware_greedy` reference |
+| `artifacts/publication_fig2_pareto.png` | Headline Pareto on the corrected environment, both sweeps and four baselines |
+| `artifacts/publication_fig3_lambda_response.png` | Lambda response, Sweep A vs. Sweep B, with `twap` and `gas_aware_greedy` reference lines |
 
+The IEEE conference paper that wraps these results is at
+`paper/main.pdf` (source `paper/main.tex`).
+
+---
 
 ## Reproducing the sweeps
 
-```
-cd defi_execution_project
+```bash
 python3 -m pytest tests/
 
-python3 -m scripts.train_test_eval --seeds 42 43 44 45 46 \
-    --lambdas 0.0 0.1 0.3 1.0 3.0 --total-timesteps 1000000 \
+# Corrected 1M-step sweep with gas history (Sweep B)
+python3 -m scripts.train_test_eval \
+    --seeds 42 43 44 45 46 \
+    --lambdas 0.0 0.1 0.3 1.0 3.0 \
+    --total-timesteps 1000000 \
     --Q0 100000 --T 20 \
     --out-dir artifacts/sweep_1M_gas_history
 
@@ -211,46 +237,78 @@ python3 -m scripts.render_publication
 
 Live calibration against the current mainnet WETH/USDC pool:
 
-```
+```bash
 python3 -m scripts.calibrate --pool weth-usdc --Q0 10.0 --T 10 \
     --eth-quote-price 2221.5
 ```
 
 End-to-end live run with fresh RPC calls:
 
-```
+```bash
 python3 -m scripts.run_full_live
 ```
 
+---
 
 ## Known limitations
 
 1. The AR(1) shock standard deviation is overridden from the calibrated
-   value of around 0.05 to 0.5 (or 1.5 in Sweep B). The calibrated value
-   is too tight to flip the MEV trigger at the demo trade size, so the
-   override is necessary for the experiment to be interesting at all. A
-   sensitivity analysis over the calibrated value is open.
-2. Scope is one pool. Multi-pool spatial routing composes externally with
-   the temporal policy.
-3. The adversary is the marginal-utility sandwich attacker. JIT liquidity
-   and cyclic atomic arbitrage are richer adversaries and are not
-   modelled.
-4. Empirical Swap replay assumes the agent's own trade does not perturb
-   future Swap arrivals, which is the standard mean-field assumption.
-5. Evaluation uses a fixed seed for the stochastic gas and flow streams.
-   The cross-seed standard deviation reported in the tables measures
-   convergence consistency across training seeds, not robustness across
-   evaluation seeds. The two would be useful to disambiguate but are not
-   reported here.
+   $\sigma_b \approx 0.05$ to 0.5 (Sweep A) or 1.5 (Sweep B). The
+   calibrated value is too tight to flip the MEV trigger at the
+   experimental trade size. A sensitivity sweep over the calibrated value
+   is open.
+2. Single-pool scope. Multi-pool spatial routing composes externally with
+   the temporal policy at deployment.
+3. The adversary is a marginal-utility sandwich attacker. JIT liquidity
+   and cyclic atomic arbitrage are richer and not modelled.
+4. Mean-field assumption: the trader's swap does not perturb subsequent
+   background Swap arrivals. Standard but not innocuous on illiquid pools.
+5. Stochastic gas/flow streams use a fixed evaluation seed. Cross-seed
+   standard deviation in the tables measures training convergence, not
+   evaluation robustness; the two would be worth disambiguating.
 
+---
 
 ## Tests
 
-```
+```bash
 python3 -m pytest tests/ -v
 ```
 
-93 tests, all offline. They cover the CFMM math against hand-computed
-golden values, the MEV bracket-bind assertion, the AR(1) sampler under
-fixed seeds, the cyclic Swap replayer, the dual-head CVaR critic, and the
-end-to-end env step under the gas-history observation.
+93 tests, fully offline. Coverage:
+
+- CFMM math against hand-computed golden values
+- MEV bracket-bind assertion (catches wall-pinned optima)
+- AR(1) gas sampler under fixed seeds
+- Cyclic Swap replayer
+- Dual-head CVaR critic with parameter-difference guard
+- End-to-end env step under the gas-history observation
+- Save/load round-trip for PPO checkpoints
+
+---
+
+## References
+
+- Angeris, G. and Chitra, T. (2020). *Improved Price Oracles: Constant
+  Function Market Makers.* AFT '20.
+- Angeris, G., Agrawal, A., Evans, A., Chitra, T. and Boyd, S. (2022).
+  *Optimal Routing for Constant Function Market Makers.* EC '22.
+- Rockafellar, R. T. and Uryasev, S. (2000). *Optimization of Conditional
+  Value-at-Risk.* Journal of Risk, 2(3), 21–41.
+- Chow, Y. and Ghavamzadeh, M. (2014). *Algorithms for CVaR Optimization
+  in MDPs.* NeurIPS.
+- Schulman, J. et al. (2017). *Proximal Policy Optimization Algorithms.*
+  arXiv:1707.06347.
+- Almgren, R. and Chriss, N. (2001). *Optimal Execution of Portfolio
+  Transactions.* Journal of Risk, 3(2), 5–40.
+- Daian, P. et al. (2020). *Flash Boys 2.0: Frontrunning in Decentralized
+  Exchanges, Miner Extractable Value, and Consensus Instability.* IEEE S&P.
+
+---
+
+## License
+
+Research code released for reproducibility. Use at your own risk; the
+findings are intentionally negative for model-free RL in this regime and
+should not be deployed as a live execution strategy without substantial
+additional engineering.
